@@ -29,11 +29,24 @@ export function useAgentSocket({ onAudio, onTranscript, onReportReady, onSession
     return ws;
   }, [onAudio, onTranscript, onReportReady, onSessionExpiring]);
 
+  // Buffer chunks into ~250ms batches before sending — small 8ms chunks don't trigger Gemini VAD
+  const audioBufferRef = useRef([]);
+  const CHUNK_TARGET = 4000 * 2; // 250ms at 16kHz 16-bit = 8000 bytes
+
   const sendAudio = useCallback((pcmBuffer) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    const bytes = new Uint8Array(pcmBuffer);
+
+    audioBufferRef.current.push(new Uint8Array(pcmBuffer));
+    const totalBytes = audioBufferRef.current.reduce((sum, b) => sum + b.byteLength, 0);
+    if (totalBytes < CHUNK_TARGET) return;
+
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of audioBufferRef.current) { merged.set(chunk, offset); offset += chunk.byteLength; }
+    audioBufferRef.current = [];
+
     let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
     wsRef.current.send(JSON.stringify({ type: "audio", data: btoa(binary) }));
   }, []);
 

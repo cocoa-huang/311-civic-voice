@@ -64,61 +64,76 @@ LIVE_CONFIG = types.LiveConnectConfig(
 @router.websocket("/ws/live")
 async def live_endpoint(ws: WebSocket):
     await ws.accept()
+    try:
+        async with client.aio.live.connect(model=MODEL, config=LIVE_CONFIG) as session:
+            print("✅ Gemini Live session opened")
+            # Kick off agent greeting immediately so receive_loop gets exercised
+            await session.send_client_content(
+                turns=[types.Content(role="user", parts=[types.Part(text="Hello, please greet the user and ask them what civic issue they'd like to report.")])]
+            )
 
-    async with client.aio.live.connect(model=MODEL, config=LIVE_CONFIG) as session:
+            async def send_loop():
+                async for msg in ws.iter_json():
+                    print(f"→ Forwarding {msg['type']} to Gemini")
+                    if msg["type"] == "stop":
+                        return
+                    data = base64.b64decode(msg["data"])
+                    if msg["type"] == "audio":
+                        await session.send_realtime_input(
+                            audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
+                        )
+                        await asyncio.sleep(0)  # yield to event loop so ping/pong can be handled
+                    elif msg["type"] == "video":
+                        await session.send_realtime_input(
+                            video=types.Blob(data=data, mime_type="image/jpeg")
+                        )
 
-        async def send_loop():
-            async for msg in ws.iter_json():
-                if msg["type"] == "stop":
-                    return
-                data = base64.b64decode(msg["data"])
-                if msg["type"] == "audio":
-                    await session.send_realtime_input(
-                        audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
-                    )
-                elif msg["type"] == "video":
-                    await session.send_realtime_input(
-                        video=types.Blob(data=data, mime_type="image/jpeg")
-                    )
+            async def receive_loop():
+                async for response in session.receive():
+                    has_audio = bool(response.server_content and response.server_content.model_turn)
+                    print(f"← Gemini response: audio={has_audio} tool_call={bool(response.tool_call)} go_away={bool(response.go_away)}")
+                    if response.go_away:
+                        await ws.send_json({"type": "session_expiring"})
+                        return
 
-        async def receive_loop():
-            async for response in session.receive():
-                if response.go_away:
-                    await ws.send_json({"type": "session_expiring"})
-                    return
+                    if response.server_content and response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                await ws.send_json(
+                                    {"type": "audio", "data": base64.b64encode(part.inline_data.data).decode()}
+                                )
 
-                if response.data:
-                    await ws.send_json(
-                        {"type": "audio", "data": base64.b64encode(response.data).decode()}
-                    )
+                    if response.tool_call:
+                        for fc in response.tool_call.function_calls:
+                            if fc.name == "generate_report":
+                                report = await generate_report_pipeline(fc.args)
+                                await ws.send_json({"type": "report_ready", "report": report})
+                                await session.send_tool_response(
+                                    function_responses=[
+                                        types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response={"result": "done"},
+                                        )
+                                    ]
+                                )
 
-                if response.tool_call:
-                    for fc in response.tool_call.function_calls:
-                        if fc.name == "generate_report":
-                            report = await generate_report_pipeline(fc.args)
-                            await ws.send_json({"type": "report_ready", "report": report})
-                            await session.send_tool_response(
-                                function_responses=[
-                                    types.FunctionResponse(
-                                        name=fc.name,
-                                        id=fc.id,
-                                        response={"result": "done"},
-                                    )
-                                ]
-                            )
+                    if (
+                        response.server_content
+                        and response.server_content.output_transcription
+                    ):
+                        await ws.send_json(
+                            {
+                                "type": "transcript",
+                                "text": response.server_content.output_transcription.text,
+                            }
+                        )
 
-                if (
-                    response.server_content
-                    and response.server_content.output_transcription
-                ):
-                    await ws.send_json(
-                        {
-                            "type": "transcript",
-                            "text": response.server_content.output_transcription.text,
-                        }
-                    )
+            try:
+                await asyncio.gather(send_loop(), receive_loop())
+            except WebSocketDisconnect:
+                pass
 
-        try:
-            await asyncio.gather(send_loop(), receive_loop())
-        except WebSocketDisconnect:
-            pass
+    except Exception as e:
+        print(f"❌ Gemini Live error: {e}")
+        import traceback; traceback.print_exc()

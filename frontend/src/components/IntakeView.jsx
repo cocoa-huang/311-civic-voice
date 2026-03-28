@@ -28,8 +28,8 @@ export function IntakeView({ onReportReady }) {
 
     const ws = connect();
     ws.onopen = async () => {
-      await startCamera(videoRef.current);
-      startFrames(sendVideo);
+      // await startCamera(videoRef.current);  // Phase 2
+      // startFrames(sendVideo);               // Phase 2
       await startCapture(sendAudio);
     };
   }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
