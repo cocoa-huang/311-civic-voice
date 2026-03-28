@@ -21,6 +21,7 @@ export function IntakeView({ onReportReady }) {
     },
   });
 
+  /*
   const handleStart = useCallback(async () => {
     setActive(true);
     setTranscript("");
@@ -32,13 +33,68 @@ export function IntakeView({ onReportReady }) {
       await startCapture(sendAudio);
     };
   }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
+*/
 
+  const handleStart = useCallback(async () => {
+    setActive(true);
+    setTranscript("Initializing camera & mic...");
+
+    try {
+      // 1. 强制优先打开摄像头和麦克风 (无视后端状态)
+      await startCamera(videoRef.current);
+      
+      await startCapture((chunk) => {
+        console.log("🎙️ Audio chunk generated! Bytes:", chunk.byteLength);
+        sendAudio(chunk); // 如果 WebSocket 没连上，sendAudio 内部会有保护机制，不会报错
+      });
+
+      setTranscript("Media started. Connecting to Agent...");
+
+      // 2. 然后再去连接 WebSocket
+      const ws = connect();
+      ws.onopen = () => {
+        console.log("✅ WebSocket Connected!");
+        setTranscript("Agent Connected. How can I help you?");
+        startFrames(sendVideo);
+      };
+      
+      ws.onerror = () => {
+        setTranscript("⚠️ Cannot connect to backend. Camera is local only.");
+      };
+
+    } catch (err) {
+      console.error("Media error:", err);
+      setTranscript("Error: Please allow camera/mic permissions.");
+    }
+  }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
   const handleStop = useCallback(() => {
     setActive(false);
     stopCapture();
     stopCamera();
     disconnect();
   }, [stopCapture, stopCamera, disconnect]);
+
+  // new: for offline testing, we can bypass the whole recording process and directly send a mock report to App.jsx
+  const handleDebugComplete = () => {
+    const mockReport = {
+      complaint_type: "Massive Pothole",
+      severity: "High",
+      agency: "DOT",
+      agency_name: "Department of Transportation",
+      location_hint: "Intersection of Flatbush Ave & Tillary St, Brooklyn",
+      narrative: "There is a huge pothole at the intersection of Flatbush Ave and Tillary St. It's causing traffic and is a safety hazard for cyclists.",
+      nearby_count: 3,
+      lat: 40.6958,
+      lng: -73.9874,
+      timestamp: Date.now()
+    };
+    
+    // if recording, stop
+    if (active) handleStop();
+    
+    // directly send the mock report to App.jsx to trigger page navigation
+    onReportReady(mockReport);
+  };
 
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden">
@@ -49,6 +105,14 @@ export function IntakeView({ onReportReady }) {
         playsInline
         muted
       />
+
+      {/* 👇 新增：Hackathon 救命/调试按钮，放在右上角 */}
+      <button
+        onClick={handleDebugComplete}
+        className="absolute top-6 right-4 bg-purple-600/90 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-full shadow-lg z-50 backdrop-blur-md"
+      >
+        [Debug] 模拟生成报告
+      </button>
 
       {/* Transcript overlay */}
       {transcript && (
