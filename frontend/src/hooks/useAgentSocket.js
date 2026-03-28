@@ -2,6 +2,9 @@ import { useRef, useCallback } from "react";
 
 export function useAgentSocket({ onAudio, onTranscript, onReportReady, onSessionExpiring }) {
   const wsRef = useRef(null);
+  const geminiSpeakingRef = useRef(false);
+  const silenceTimerRef = useRef(null);
+  const talkingRef = useRef(false);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -12,6 +15,13 @@ export function useAgentSocket({ onAudio, onTranscript, onReportReady, onSession
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "audio") {
+        // Mark Gemini as speaking; clear mic gate after 800ms of silence
+        geminiSpeakingRef.current = true;
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = setTimeout(() => {
+          geminiSpeakingRef.current = false;
+        }, 800);
+
         const binary = atob(msg.data);
         const buffer = new ArrayBuffer(binary.length);
         const view = new Uint8Array(buffer);
@@ -35,6 +45,7 @@ export function useAgentSocket({ onAudio, onTranscript, onReportReady, onSession
 
   const sendAudio = useCallback((pcmBuffer) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    if (!talkingRef.current) return; // only send while button held
 
     audioBufferRef.current.push(new Uint8Array(pcmBuffer));
     const totalBytes = audioBufferRef.current.reduce((sum, b) => sum + b.byteLength, 0);
@@ -63,5 +74,22 @@ export function useAgentSocket({ onAudio, onTranscript, onReportReady, onSession
     }
   }, []);
 
-  return { connect, sendAudio, sendVideo, disconnect };
+  const sendActivityStart = useCallback(() => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    talkingRef.current = true;
+    audioBufferRef.current = [];
+  }, []);
+
+  const sendActivityEnd = useCallback(() => {
+    talkingRef.current = false;
+    audioBufferRef.current = [];
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    // Send 600ms of silence so VAD detects end-of-speech
+    const silence = new Uint8Array(16000 * 0.6 * 2); // 600ms @ 16kHz 16-bit, all zeros
+    let binary = "";
+    for (let i = 0; i < silence.length; i++) binary += String.fromCharCode(silence[i]);
+    wsRef.current.send(JSON.stringify({ type: "audio", data: btoa(binary) }));
+  }, []);
+
+  return { connect, sendAudio, sendVideo, disconnect, sendActivityStart, sendActivityEnd };
 }

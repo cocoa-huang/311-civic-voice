@@ -11,7 +11,8 @@ export function IntakeView({ onReportReady }) {
   const { startCapture, stopCapture, playAudio } = useAudio();
   const { startCamera, startFrames, stopCamera } = useCamera();
 
-  const { connect, sendAudio, sendVideo, disconnect } = useAgentSocket({
+  const [talking, setTalking] = useState(false);
+  const { connect, sendAudio, sendVideo, disconnect, sendActivityStart, sendActivityEnd } = useAgentSocket({
     onAudio: playAudio,
     onTranscript: (text) => setTranscript(text),
     onReportReady,
@@ -21,7 +22,7 @@ export function IntakeView({ onReportReady }) {
     },
   });
 
-  /*
+  
   const handleStart = useCallback(async () => {
     setActive(true);
     setTranscript("");
@@ -33,40 +34,40 @@ export function IntakeView({ onReportReady }) {
       await startCapture(sendAudio);
     };
   }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
-*/
 
-  const handleStart = useCallback(async () => {
-    setActive(true);
-    setTranscript("Initializing camera & mic...");
 
-    try {
-      // 1. 强制优先打开摄像头和麦克风 (无视后端状态)
-      await startCamera(videoRef.current);
+  // const handleStart = useCallback(async () => {
+  //   setActive(true);
+  //   setTranscript("Initializing camera & mic...");
+
+  //   try {
+  //     // 1. 强制优先打开摄像头和麦克风 (无视后端状态)
+  //     await startCamera(videoRef.current);
       
-      await startCapture((chunk) => {
-        console.log("🎙️ Audio chunk generated! Bytes:", chunk.byteLength);
-        sendAudio(chunk); // 如果 WebSocket 没连上，sendAudio 内部会有保护机制，不会报错
-      });
+  //     await startCapture((chunk) => {
+  //       console.log("🎙️ Audio chunk generated! Bytes:", chunk.byteLength);
+  //       sendAudio(chunk); // 如果 WebSocket 没连上，sendAudio 内部会有保护机制，不会报错
+  //     });
 
-      setTranscript("Media started. Connecting to Agent...");
+  //     setTranscript("Media started. Connecting to Agent...");
 
-      // 2. 然后再去连接 WebSocket
-      const ws = connect();
-      ws.onopen = () => {
-        console.log("✅ WebSocket Connected!");
-        setTranscript("Agent Connected. How can I help you?");
-        startFrames(sendVideo);
-      };
+  //     // 2. 然后再去连接 WebSocket
+  //     const ws = connect();
+  //     ws.onopen = () => {
+  //       console.log("✅ WebSocket Connected!");
+  //       setTranscript("Agent Connected. How can I help you?");
+  //       startFrames(sendVideo);
+  //     };
       
-      ws.onerror = () => {
-        setTranscript("⚠️ Cannot connect to backend. Camera is local only.");
-      };
+  //     ws.onerror = () => {
+  //       setTranscript("⚠️ Cannot connect to backend. Camera is local only.");
+  //     };
 
-    } catch (err) {
-      console.error("Media error:", err);
-      setTranscript("Error: Please allow camera/mic permissions.");
-    }
-  }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
+  //   } catch (err) {
+  //     console.error("Media error:", err);
+  //     setTranscript("Error: Please allow camera/mic permissions.");
+  //   }
+  // }, [connect, startCamera, startFrames, sendVideo, startCapture, sendAudio]);
   const handleStop = useCallback(() => {
     setActive(false);
     stopCapture();
@@ -136,15 +137,31 @@ export function IntakeView({ onReportReady }) {
             </svg>
           </button>
         ) : (
-          <button
-            onClick={handleStop}
-            className="w-20 h-20 rounded-full bg-red-600 hover:bg-red-500 flex items-center justify-center shadow-lg transition-all animate-pulse"
-            aria-label="Stop session"
-          >
-            <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
-              <rect x="6" y="6" width="12" height="12" rx="1" />
-            </svg>
-          </button>
+          <div className="flex gap-4 items-center">
+            {/* Push-to-talk: hold to speak, release to send */}
+            <button
+              onMouseDown={() => { setTalking(true); sendActivityStart(); }}
+              onMouseUp={() => { setTalking(false); sendActivityEnd(); }}
+              onTouchStart={(e) => { e.preventDefault(); setTalking(true); sendActivityStart(); }}
+              onTouchEnd={(e) => { e.preventDefault(); setTalking(false); sendActivityEnd(); }}
+              className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg transition-all select-none ${talking ? "bg-green-500 scale-110" : "bg-blue-600 hover:bg-blue-500"}`}
+              aria-label="Hold to talk"
+            >
+              <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zm-1 17.93V21h-2v2h6v-2h-2v-2.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/>
+              </svg>
+            </button>
+            {/* Stop session */}
+            <button
+              onClick={handleStop}
+              className="w-12 h-12 rounded-full bg-red-600 hover:bg-red-500 flex items-center justify-center shadow-lg"
+              aria-label="Stop session"
+            >
+              <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="1" />
+              </svg>
+            </button>
+          </div>
         )}
       </div>
 
@@ -153,7 +170,7 @@ export function IntakeView({ onReportReady }) {
         <div className={`px-4 py-1.5 rounded-full text-sm font-medium ${
           active ? "bg-red-500 text-white" : "bg-white/20 text-white backdrop-blur-sm"
         }`}>
-          {active ? "● Recording" : "311 Civic Voice"}
+          {talking ? "🎤 Speaking..." : active ? "Hold mic to speak" : "311 Civic Voice"}
         </div>
       </div>
     </div>

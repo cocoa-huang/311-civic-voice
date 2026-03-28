@@ -57,6 +57,13 @@ LIVE_CONFIG = types.LiveConnectConfig(
     system_instruction=types.Content(parts=[types.Part(text=SYSTEM_PROMPT)]),
     tools=[GENERATE_REPORT_TOOL],
     output_audio_transcription=types.AudioTranscriptionConfig(),
+    input_audio_transcription=types.AudioTranscriptionConfig(),
+    realtime_input_config=types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+        )
+    ),
     context_window_compression=types.ContextWindowCompressionConfig(trigger_tokens=25600),
 )
 
@@ -77,13 +84,14 @@ async def live_endpoint(ws: WebSocket):
                     print(f"→ Forwarding {msg['type']} to Gemini")
                     if msg["type"] == "stop":
                         return
-                    data = base64.b64decode(msg["data"])
                     if msg["type"] == "audio":
+                        data = base64.b64decode(msg["data"])
                         await session.send_realtime_input(
                             audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
                         )
-                        await asyncio.sleep(0)  # yield to event loop so ping/pong can be handled
+                        await asyncio.sleep(0)
                     elif msg["type"] == "video":
+                        data = base64.b64decode(msg["data"])
                         await session.send_realtime_input(
                             video=types.Blob(data=data, mime_type="image/jpeg")
                         )
@@ -122,12 +130,17 @@ async def live_endpoint(ws: WebSocket):
                         response.server_content
                         and response.server_content.output_transcription
                     ):
-                        await ws.send_json(
-                            {
-                                "type": "transcript",
-                                "text": response.server_content.output_transcription.text,
-                            }
-                        )
+                        text = response.server_content.output_transcription.text
+                        print(f"📝 Agent transcript: {text!r}")
+                        await ws.send_json({"type": "transcript", "text": text})
+
+                    if (
+                        response.server_content
+                        and response.server_content.input_transcription
+                    ):
+                        text = response.server_content.input_transcription.text
+                        print(f"🎤 User transcript: {text!r}")
+                        await ws.send_json({"type": "transcript", "text": f"You: {text}"})
 
             try:
                 await asyncio.gather(send_loop(), receive_loop())

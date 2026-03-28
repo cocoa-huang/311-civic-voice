@@ -9,6 +9,12 @@ export function useAudio() {
   const startCapture = useCallback(async (onChunk) => {
     onPCMChunkRef.current = onChunk;
 
+    // Output context: 24kHz for Gemini audio output — create eagerly here (user gesture context)
+    if (!outputCtxRef.current || outputCtxRef.current.state === "closed") {
+      outputCtxRef.current = new AudioContext({ sampleRate: 24000 });
+    }
+    nextPlayTimeRef.current = 0;
+
     // Input context: 16kHz for Gemini
     const inputCtx = new AudioContext({ sampleRate: 16000 });
     inputCtxRef.current = inputCtx;
@@ -17,7 +23,9 @@ export function useAudio() {
     await inputCtx.audioWorklet.addModule("/audio-processor.js");
     console.log("[audio] AudioWorklet module loaded");
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true },
+    });
     console.log("[audio] Mic stream acquired");
     const source = inputCtx.createMediaStreamSource(stream);
 
@@ -27,7 +35,12 @@ export function useAudio() {
     let chunkCount = 0;
     workletNode.port.onmessage = (e) => {
       chunkCount++;
-      if (chunkCount <= 3) console.log(`[audio] PCM chunk #${chunkCount}, bytes:`, e.data.byteLength);
+      if (chunkCount % 40 === 0) {
+        const int16 = new Int16Array(e.data);
+        let max = 0;
+        for (let i = 0; i < int16.length; i++) if (Math.abs(int16[i]) > max) max = Math.abs(int16[i]);
+        console.log(`[mic] chunk #${chunkCount} maxAmp=${max} ${max > 300 ? "🔊 SPEECH" : "🔇 silence"}`);
+      }
       if (onPCMChunkRef.current) onPCMChunkRef.current(e.data);
     };
 
@@ -41,17 +54,17 @@ export function useAudio() {
     inputCtxRef.current?.close();
     inputCtxRef.current = null;
     workletNodeRef.current = null;
+    outputCtxRef.current?.close();
+    outputCtxRef.current = null;
+    nextPlayTimeRef.current = 0;
   }, []);
 
   const nextPlayTimeRef = useRef(0);
 
   const playAudio = useCallback(async (pcmBuffer) => {
     console.log("[audio] playAudio called, bytes:", pcmBuffer.byteLength);
-    // Output context: 24kHz for Gemini audio output
-    if (!outputCtxRef.current) {
-      outputCtxRef.current = new AudioContext({ sampleRate: 24000 });
-    }
     const ctx = outputCtxRef.current;
+    if (!ctx) return;
     console.log("[audio] ctx state:", ctx.state, "currentTime:", ctx.currentTime, "nextPlay:", nextPlayTimeRef.current);
 
     const int16 = new Int16Array(pcmBuffer);
